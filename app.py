@@ -18,6 +18,7 @@ from flask_login import LoginManager, login_user, logout_user, login_required, c
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_mail import Mail, Message
 from itsdangerous import URLSafeTimedSerializer
+from supabase import create_client, Client
 
 # Import Models and DB
 from models import db, User, System, UserSystemAccess, AuditLog
@@ -34,6 +35,17 @@ app = Flask(__name__)
 
 # Configurações
 app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-key-change-in-production')
+
+# Supabase Client Initialization
+SUPABASE_URL = os.environ.get('SUPABASE_URL')
+SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
+supabase: Client = None
+
+if SUPABASE_URL and SUPABASE_KEY:
+    try:
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+    except Exception as e:
+        print(f"Error initializing Supabase: {e}")
 
 # Database Config (SQLite)
 # Database Config (SQLite)
@@ -239,20 +251,54 @@ def login():
             flash('Por favor, preencha todos os campos.', 'error')
             return render_template('login.html')
         
-        # Auth via DB
-        user = User.query.filter_by(email=email).first()
-        
-        if user and check_password_hash(user.password_hash, password):
-            if not user.is_active:
-                flash('Conta desativada.', 'error')
-                return render_template('login.html')
+        # Supabase Auth
+        if supabase:
+            try:
+                auth_response = supabase.auth.sign_in_with_password({"email": email, "password": password})
                 
-            login_user(user)
+                if auth_response.user:
+                    # Sync with local DB for RBAC
+                    user = User.query.filter_by(email=email).first()
+                    
+                    if not user:
+                        # Auto-create local user if it doesn't exist but authenticated in Supabase
+                        user = User(
+                            email=email,
+                            name=email.split('@')[0], # Fallback name
+                            role='user',
+                            created_at=datetime.utcnow()
+                        )
+                        db.session.add(user)
+                        db.session.commit()
+                    
+                    if not user.is_active:
+                        flash('Conta desativada.', 'error')
+                        return render_template('login.html')
+                        
+                    login_user(user)
+                    
+                    next_page = request.args.get('next')
+                    return redirect(next_page) if next_page else redirect(url_for('index'))
+            except Exception as e:
+                # Tratar erros do Supabase (ex: senha incorreta)
+                error_msg = str(e).lower()
+                if 'invalid login credentials' in error_msg:
+                    flash('Email ou senha incorretos.', 'error')
+                else:
+                    flash(f'Erro na autenticação: {e}', 'error')
+                return render_template('login.html')
+        else:
+            # Fallback for local auth if Supabase not configured (optional, for safety)
+            user = User.query.filter_by(email=email).first()
+            if user and check_password_hash(user.password_hash, password):
+                if not user.is_active:
+                    flash('Conta desativada.', 'error')
+                    return render_template('login.html')
+                login_user(user)
+                next_page = request.args.get('next')
+                return redirect(next_page) if next_page else redirect(url_for('index'))
             
-            next_page = request.args.get('next')
-            return redirect(next_page) if next_page else redirect(url_for('index'))
-            
-        flash('Email ou senha incorretos.', 'error')
+        flash('Email ou senha incorretos ou sistema offline.', 'error')
     
     return render_template('login.html')
 
@@ -291,11 +337,27 @@ def register():
             flash('Este email já está cadastrado.', 'error')
             return redirect(url_for('login'))
             
-        # Create User
+        # Register in Supabase
+        if supabase:
+            try:
+                auth_response = supabase.auth.sign_up({
+                    "email": email, 
+                    "password": password,
+                    "options": {"data": {"full_name": name}}
+                })
+                
+                if not auth_response.user:
+                    flash('Falha ao registrar no Supabase.', 'error')
+                    return render_template('register.html')
+            except Exception as e:
+                flash(f'Erro no registro: {e}', 'error')
+                return render_template('register.html')
+            
+        # Create Local User for RBAC
         new_user = User(
             email=email,
             name=name,
-            password_hash=generate_password_hash(password),
+            password_hash=generate_password_hash(password) if not supabase else None,
             role='user', # Default role
             created_at=datetime.utcnow()
         )
@@ -309,7 +371,11 @@ def register():
             db.session.add(access)
         db.session.commit()
         
-        flash('Cadastro realizado com sucesso! Faça login.', 'success')
+        if supabase:
+            flash('Confirmado! Verifique seu email para ativar a conta (se habilitado no Supabase) ou já pode fazer login.', 'success')
+        else:
+            flash('Cadastro realizado com sucesso! Faça login.', 'success')
+            
         return redirect(url_for('login'))
     
     return render_template('register.html')
@@ -375,6 +441,11 @@ def send_reset_email(user_email, token):
 @app.route('/logout')
 @login_required
 def logout():
+    if supabase:
+        try:
+            supabase.auth.sign_out()
+        except:
+            pass
     logout_user()
     flash('Você saiu com sucesso.', 'info')
     return redirect(url_for('login'))

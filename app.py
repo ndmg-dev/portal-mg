@@ -96,19 +96,27 @@ def load_user(user_id):
 @app.route('/')
 @login_required
 def index():
+    print(f"DEBUG: Index access by {current_user.email} (Role: {current_user.role})")
+    
     # Buscar todos os sistemas do Supabase
     try:
         response = supabase.table('systems').select('*').execute()
         all_systems = response.data
-        print(f"DEBUG: Total systems found: {len(all_systems)}")
+        print(f"DEBUG: Total systems found in DB: {len(all_systems)}")
     except Exception as e:
         print(f"DEBUG: Error fetching systems: {e}")
         all_systems = []
     
     allowed_systems = []
     for sistema in all_systems:
-        has_access = sistema.get('is_public') or current_user.has_access(sistema['id'])
-        print(f"DEBUG: System {sistema['id']} - Public: {sistema.get('is_public')}, Access: {has_access}")
+        # Debugging access for each system
+        is_public = sistema.get('is_public')
+        has_explicit_access = current_user.has_access(sistema['id'])
+        
+        # Admin ALWAYS gets access
+        has_access = (current_user.role == 'admin') or is_public or has_explicit_access
+        
+        print(f"DEBUG: System {sistema['id']} | Category: {sistema['category']} | Public: {is_public} | Access: {has_access}")
         
         if has_access:
             sys_dict = {
@@ -139,7 +147,6 @@ def index():
         'index.html',
         sistemas=allowed_systems,
         team_members=team_members,
-        current_user=current_user,
         ano_atual=datetime.now().year
     )
 

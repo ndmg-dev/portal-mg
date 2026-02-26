@@ -206,3 +206,4 @@ Para dúvidas ou problemas técnicos, entre em contato:
 
 **Desenvolvido por**: Núcleo Digital MG  
 **Data**: Dezembro 2025
+# portal-mg

@@ -1,7 +1,16 @@
+import os
 from flask import Blueprint, render_template, request, flash, redirect, url_for, jsonify
 from flask_login import login_required, current_user
-from models import db, User, System, UserSystemAccess, AuditLog
 from functools import wraps
+from supabase import create_client, Client
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# Supabase Client Initialization
+SUPABASE_URL = os.environ.get('SUPABASE_URL')
+SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 admin_bp = Blueprint('admin', __name__, url_prefix='/admin')
 
@@ -19,14 +28,24 @@ def admin_required(f):
 @admin_required
 def dashboard():
     """Painel Principal do Admin"""
-    stats = {
-        'users_count': User.query.count(),
-        'systems_count': System.query.count(),
-        'active_users': User.query.filter_by(is_active=True).count()
-    }
-    
-    # Recent logs
-    logs = AuditLog.query.order_by(AuditLog.created_at.desc()).limit(10).all()
+    try:
+        users_res = supabase.table('profiles').select('*', count='exact').execute()
+        active_res = supabase.table('profiles').select('*', count='exact').eq('is_active', True).execute()
+        systems_res = supabase.table('systems').select('*', count='exact').execute()
+        
+        stats = {
+            'users_count': users_res.count or 0,
+            'systems_count': systems_res.count or 0,
+            'active_users': active_res.count or 0
+        }
+        
+        # Recent logs
+        logs_res = supabase.table('audit_logs').select('*').order('created_at', desc=True).limit(10).execute()
+        logs = logs_res.data
+    except Exception as e:
+        flash(f'Erro ao carregar dashboard: {e}', 'error')
+        stats = {'users_count': 0, 'systems_count': 0, 'active_users': 0}
+        logs = []
     
     return render_template('admin/dashboard.html', stats=stats, logs=logs)
 
@@ -36,112 +55,109 @@ def dashboard():
 def list_users():
     """Listagem de usuários"""
     search = request.args.get('search', '')
-    query = User.query
-    
-    if search:
-        query = query.filter(User.name.ilike(f'%{search}%') | User.email.ilike(f'%{search}%'))
+    try:
+        query = supabase.table('profiles').select('*')
+        if search:
+            query = query.or_(f'full_name.ilike.%{search}%,email.ilike.%{search}%')
+            
+        users_res = query.order('full_name').execute()
+        users = users_res.data
+    except Exception as e:
+        flash(f'Erro ao buscar usuários: {e}', 'error')
+        users = []
         
-    users = query.order_by(User.name).all()
     return render_template('admin/users_list.html', users=users, search=search)
 
-@admin_bp.route('/users/<int:user_id>/permissions', methods=['GET', 'POST'])
+@admin_bp.route('/users/<uuid:user_id>/permissions', methods=['GET', 'POST'])
 @login_required
 @admin_required
 def user_permissions(user_id):
     """Gerenciar permissões de um usuário"""
-    target_user = User.query.get_or_404(user_id)
-    
-    # Prevent editing self role/permissions if strict security needed, 
-    # but for now let's just log it. 
-    # Or restrict Managers from editing Admins.
-    if current_user.role == 'manager' and target_user.role == 'admin':
-        flash('Gestores não podem editar Administradores.', 'error')
-        return redirect(url_for('admin.list_users'))
-
-    if request.method == 'POST':
-        # Get list of allowed system IDs
-        allowed_systems = request.form.getlist('systems')
+    try:
+        target_res = supabase.table('profiles').select('*').eq('id', str(user_id)).execute()
+        if not target_res.data:
+            flash('Usuário não encontrado.', 'error')
+            return redirect(url_for('admin.list_users'))
         
-        # 1. Update Role if present
-        new_role = request.form.get('role')
-        if new_role and new_role in ['user', 'manager', 'admin']:
-            # Only admin can change roles
-            if current_user.role == 'admin':
-                if target_user.role != new_role:
-                    target_user.role = new_role
+        target_user = target_res.data[0]
+        
+        if current_user.role == 'manager' and target_user['role'] == 'admin':
+            flash('Gestores não podem editar Administradores.', 'error')
+            return redirect(url_for('admin.list_users'))
+
+        if request.method == 'POST':
+            allowed_systems = request.form.getlist('systems')
+            new_role = request.form.get('role')
+            
+            # 1. Update Role
+            if new_role and new_role in ['user', 'manager', 'admin'] and current_user.role == 'admin':
+                if target_user['role'] != new_role:
+                    supabase.table('profiles').update({'role': new_role}).eq('id', str(user_id)).execute()
                     # Audit Role Change
-                    log = AuditLog(
-                        actor_id=current_user.id,
-                        target_id=str(target_user.id),
-                        action='UPDATE_ROLE',
-                        meta_info={'new_role': new_role}
-                    )
-                    db.session.add(log)
-        
-        # 2. Update Systems Access (Sync approach)
-        # Strategy: Delete all existing and re-insert checks. 
-        # Or better: compare sets to log efficiently.
-        
-        current_accesses = {a.system_id for a in target_user.permissions}
-        new_accesses = set(allowed_systems)
-        
-        to_add = new_accesses - current_accesses
-        to_remove = current_accesses - new_accesses
-        
-        # Add Grants
-        for sys_id in to_add:
-            access = UserSystemAccess(user_id=target_user.id, system_id=sys_id, granted_by=current_user.id)
-            db.session.add(access)
-            # Log
-            log = AuditLog(
-                actor_id=current_user.id,
-                target_id=f"User:{target_user.id}",
-                action='GRANT_ACCESS',
-                meta_info={'system': sys_id}
-            )
-            db.session.add(log)
+                    supabase.table('audit_logs').insert({
+                        'actor_id': current_user.id,
+                        'target_id': str(user_id),
+                        'action': 'UPDATE_ROLE',
+                        'meta_info': {'new_role': new_role}
+                    }).execute()
             
-        # Revokes
-        if to_remove:
-            UserSystemAccess.query.filter(
-                UserSystemAccess.user_id == target_user.id,
-                UserSystemAccess.system_id.in_(to_remove)
-            ).delete(synchronize_session=False)
+            # 2. Update Systems Access
+            access_res = supabase.table('user_system_access').select('system_id').eq('user_id', str(user_id)).execute()
+            current_accesses = {a['system_id'] for a in access_res.data}
+            new_accesses = set(allowed_systems)
             
+            to_add = new_accesses - current_accesses
+            to_remove = current_accesses - new_accesses
+            
+            # Add Grants
+            for sys_id in to_add:
+                supabase.table('user_system_access').insert({
+                    'user_id': str(user_id),
+                    'system_id': sys_id,
+                    'granted_by': current_user.id
+                }).execute()
+                
+                supabase.table('audit_logs').insert({
+                    'actor_id': current_user.id,
+                    'target_id': f"User:{user_id}",
+                    'action': 'GRANT_ACCESS',
+                    'meta_info': {'system': sys_id}
+                }).execute()
+                
+            # Revokes
             for sys_id in to_remove:
-                log = AuditLog(
-                    actor_id=current_user.id,
-                    target_id=f"User:{target_user.id}",
-                    action='REVOKE_ACCESS',
-                    meta_info={'system': sys_id}
-                )
-                db.session.add(log)
-        
-        try:
-            db.session.commit()
-            flash(f'Permissões de {target_user.name} atualizadas.', 'success')
-        except Exception as e:
-            db.session.rollback()
-            flash(f'Erro ao salvar: {str(e)}', 'error')
+                supabase.table('user_system_access').delete().eq('user_id', str(user_id)).eq('system_id', sys_id).execute()
+                
+                supabase.table('audit_logs').insert({
+                    'actor_id': current_user.id,
+                    'target_id': f"User:{user_id}",
+                    'action': 'REVOKE_ACCESS',
+                    'meta_info': {'system': sys_id}
+                }).execute()
             
-        return redirect(url_for('admin.user_permissions', user_id=user_id))
+            flash(f'Permissões de {target_user["full_name"]} atualizadas.', 'success')
+            return redirect(url_for('admin.user_permissions', user_id=user_id))
 
-    # GET
-    systems = System.query.all()
-    # Group systems by category
-    systems_by_category = {}
-    for s in systems:
-        cat = s.category or 'Outros'
-        if cat not in systems_by_category:
-            systems_by_category[cat] = []
-        systems_by_category[cat].append(s)
+        # GET
+        systems_res = supabase.table('systems').select('*').execute()
+        systems = systems_res.data
+        
+        systems_by_category = {}
+        for s in systems:
+            cat = s['category'] or 'Outros'
+            if cat not in systems_by_category:
+                systems_by_category[cat] = []
+            systems_by_category[cat].append(s)
 
-    # Get user allowed system IDs for checkboxes
-    user_system_ids = {p.system_id for p in target_user.permissions}
-    
-    return render_template(
-        'admin/user_edit.html', 
-        user=target_user, 
-        systems_by_category=systems_by_category,
-        user_system_ids=user_system_ids
-    )
+        access_res = supabase.table('user_system_access').select('system_id').eq('user_id', str(user_id)).execute()
+        user_system_ids = {a['system_id'] for a in access_res.data}
+        
+        return render_template(
+            'admin/user_edit.html', 
+            user=target_user, 
+            systems_by_category=systems_by_category,
+            user_system_ids=user_system_ids
+        )
+    except Exception as e:
+        flash(f'Erro ao processar permissões: {e}', 'error')
+        return redirect(url_for('admin.list_users'))

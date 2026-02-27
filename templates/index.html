@@ -186,25 +186,61 @@
     </section>
 
     <!-- ========================================
-         EQUIPE (Team Members)
+         SCROLLER DE PREVIEWS
          ======================================== -->
-    <section class="team-section">
-        <div class="team-container">
-            <h2 class="team-titulo">Nossa Equipe</h2>
-            <p class="team-subtitle">Conheça os desenvolvedores do Núcleo Digital</p>
+    <section class="scroller-section">
+        <div class="scroller-container">
+            <h2 class="scroller-titulo">Ecossistema de Ferramentas</h2>
+            <p class="scroller-subtitle">Veja algumas das soluções desenvolvidas para nossa equipe</p>
 
-            <div class="team-grid">
-                {% for member in team_members %}
-                <!-- Card de Membro da Equipe -->
-                <article class="team-card">
-                    <div class="team-photo-wrapper">
-                        <img src="{{ url_for('static', filename='img/' + member.foto) }}"
-                            alt="Foto de {{ member.nome }}" class="team-photo">
+            <div class="scroller-wrapper">
+                <div class="scroller-track">
+                    <!-- Grupo 1 -->
+                    <div class="scroller-group">
+                        <div class="scroller-item"><img
+                                src="{{ url_for('static', filename='img/abertura_empresa.png') }}" class="scroller-img"
+                                alt="Abertura de Empresa"></div>
+                        <div class="scroller-item"><img
+                                src="{{ url_for('static', filename='img/aeronord_convocacoes.png') }}"
+                                class="scroller-img" alt="Aeronord Convocações"></div>
+                        <div class="scroller-item"><img
+                                src="{{ url_for('static', filename='img/calculadora_comissao.png') }}"
+                                class="scroller-img" alt="Calculadora de Comissão"></div>
+                        <div class="scroller-item"><img
+                                src="{{ url_for('static', filename='img/central_suporte.png') }}" class="scroller-img"
+                                alt="Central de Suporte"></div>
+                        <div class="scroller-item"><img src="{{ url_for('static', filename='img/portal_colab.png') }}"
+                                class="scroller-img" alt="Portal do Colaborador"></div>
+                        <div class="scroller-item"><img
+                                src="{{ url_for('static', filename='img/sistema_adiantamentos.png') }}"
+                                class="scroller-img" alt="Sistema de Adiantamentos"></div>
+                        <div class="scroller-item"><img src="{{ url_for('static', filename='img/sistema_ponto.png') }}"
+                                class="scroller-img" alt="Sistema de Ponto"></div>
                     </div>
-                    <h3 class="team-name">{{ member.nome }}</h3>
-                    <span class="team-badge">dev &lt;/&gt;</span>
-                </article>
-                {% endfor %}
+
+                    <!-- Grupo 2 (Cópia para loop infinito) -->
+                    <div class="scroller-group">
+                        <div class="scroller-item"><img
+                                src="{{ url_for('static', filename='img/abertura_empresa.png') }}" class="scroller-img"
+                                alt="Abertura de Empresa"></div>
+                        <div class="scroller-item"><img
+                                src="{{ url_for('static', filename='img/aeronord_convocacoes.png') }}"
+                                class="scroller-img" alt="Aeronord Convocações"></div>
+                        <div class="scroller-item"><img
+                                src="{{ url_for('static', filename='img/calculadora_comissao.png') }}"
+                                class="scroller-img" alt="Calculadora de Comissão"></div>
+                        <div class="scroller-item"><img
+                                src="{{ url_for('static', filename='img/central_suporte.png') }}" class="scroller-img"
+                                alt="Central de Suporte"></div>
+                        <div class="scroller-item"><img src="{{ url_for('static', filename='img/portal_colab.png') }}"
+                                class="scroller-img" alt="Portal do Colaborador"></div>
+                        <div class="scroller-item"><img
+                                src="{{ url_for('static', filename='img/sistema_adiantamentos.png') }}"
+                                class="scroller-img" alt="Sistema de Adiantamentos"></div>
+                        <div class="scroller-item"><img src="{{ url_for('static', filename='img/sistema_ponto.png') }}"
+                                class="scroller-img" alt="Sistema de Ponto"></div>
+                    </div>
+                </div>
             </div>
         </div>
     </section>

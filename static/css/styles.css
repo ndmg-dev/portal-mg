@@ -681,159 +681,128 @@ body {
 }
 
 /* ========================================
-   EQUIPE (TEAM MEMBERS)
+   SCROLLER DE PREVIEWS
    ======================================== */
-.team-section {
-    padding: var(--spacing-xl) var(--spacing-md);
-    background-color: var(--bg-primary);
+.scroller-section {
+    padding: var(--spacing-2xl) 0;
+    background: linear-gradient(180deg, var(--bg-primary) 0%, var(--bg-secondary) 100%);
+    overflow: hidden;
+    position: relative;
 }
 
-.team-container {
-    max-width: 1000px;
+/* Subtle gradient mask to fade the edges of the scroller */
+.scroller-section::before,
+.scroller-section::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 15%;
+    z-index: 2;
+    pointer-events: none;
+}
+.scroller-section::before {
+    left: 0;
+    background: linear-gradient(to right, var(--bg-secondary) 0%, transparent 100%);
+}
+.scroller-section::after {
+    right: 0;
+    background: linear-gradient(to left, var(--bg-secondary) 0%, transparent 100%);
+}
+
+.scroller-container {
+    max-width: 1400px;
     margin: 0 auto;
+    text-align: center;
 }
 
-.team-titulo {
+.scroller-titulo {
     font-family: var(--font-heading);
     font-size: var(--text-3xl);
     font-weight: var(--font-bold);
-    text-align: center;
-    margin-bottom: var(--spacing-sm);
     color: var(--text-primary);
+    margin-bottom: var(--spacing-sm);
 }
 
-.team-subtitle {
+.scroller-subtitle {
     font-size: var(--text-lg);
     color: var(--text-secondary);
-    text-align: center;
     margin-bottom: var(--spacing-xl);
 }
 
-.team-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    gap: var(--spacing-xl);
-    justify-items: center;
-}
-
-/* Responsivo: 4 colunas em desktop */
-@media (min-width: 768px) {
-    .team-grid {
-        grid-template-columns: repeat(2, 1fr);
-    }
-}
-
-@media (min-width: 1024px) {
-    .team-grid {
-        grid-template-columns: repeat(4, 1fr);
-    }
-}
-
-/* Card de Membro da Equipe */
-.team-card {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: var(--spacing-md);
-    padding: var(--spacing-md);
-    background-color: var(--bg-card);
-    border: 1px solid var(--border-color);
-    border-radius: var(--border-radius-lg);
-    transition: all var(--transition-base);
-    animation: fadeInUp 0.6s ease-out;
-    position: relative;
-    overflow: visible;
-}
-
-/* Staggered animation for team cards */
-.team-card:nth-child(1) {
-    animation-delay: 0.1s;
-}
-
-.team-card:nth-child(2) {
-    animation-delay: 0.2s;
-}
-
-.team-card:nth-child(3) {
-    animation-delay: 0.3s;
-}
-
-.team-card:nth-child(4) {
-    animation-delay: 0.4s;
-}
-
-.team-card:hover {
-    transform: translateY(-5px);
-    box-shadow: 0 10px 25px rgba(251, 191, 36, 0.2);
-    border-color: var(--accent-yellow);
-    background-color: var(--bg-card-hover);
-}
-
-/* Wrapper da Foto com Moldura Circular */
-.team-photo-wrapper {
-    position: relative;
-    width: 150px;
-    height: 150px;
-    border-radius: 50%;
+.scroller-wrapper {
+    width: 100%;
     overflow: hidden;
-    border: 3px solid var(--accent-yellow);
-    box-shadow: 0 4px 12px rgba(251, 191, 36, 0.3);
-    transition: all var(--transition-base);
 }
 
-.team-card:hover .team-photo-wrapper {
-    border-color: var(--accent-yellow-hover);
-    box-shadow: 0 6px 18px rgba(251, 191, 36, 0.4);
+.scroller-track {
+    display: flex;
+    gap: var(--spacing-lg);
+    width: max-content;
+    animation: scroll 40s linear infinite;
 }
 
-/* Foto do Membro */
-.team-photo {
+.scroller-track:hover {
+    animation-play-state: paused;
+}
+
+.scroller-group {
+    display: flex;
+    gap: var(--spacing-lg);
+    padding-right: var(--spacing-lg); /* Ensure gap between group 1 and 2 */
+}
+
+.scroller-item {
+    flex: 0 0 auto;
+    width: 450px;
+    height: 280px;
+    border-radius: var(--border-radius-xl);
+    overflow: hidden;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+    transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+    position: relative;
+    background-color: var(--bg-card);
+}
+
+.scroller-item::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+    pointer-events: none;
+}
+
+.scroller-img {
     width: 100%;
     height: 100%;
     object-fit: cover;
-    transition: transform var(--transition-base);
+    object-position: top;
+    transition: transform 0.6s ease;
 }
 
-.team-card:hover .team-photo {
+.scroller-item:hover {
+    transform: translateY(-8px) scale(1.02);
+    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.8), 0 0 0 1px var(--accent-yellow);
+    z-index: 10;
+}
+
+.scroller-item:hover .scroller-img {
     transform: scale(1.05);
 }
 
-/* Nome do Membro */
-.team-name {
-    font-family: var(--font-heading);
-    font-size: var(--text-lg);
-    font-weight: var(--font-semibold);
-    color: var(--text-primary);
-    text-align: center;
-    margin: 0;
-    transition: color var(--transition-fast);
+@keyframes scroll {
+    0% { transform: translateX(0); }
+    100% { transform: translateX(-50%); }
 }
 
-.team-card:hover .team-name {
-    color: var(--accent-yellow);
-}
-
-/* Badge "dev </>" */
-.team-badge {
-    display: inline-block;
-    background: linear-gradient(135deg, #1a1a1a 0%, #2d2d2d 100%);
-    color: var(--accent-yellow);
-    font-family: 'Courier New', monospace;
-    font-size: var(--text-sm);
-    font-weight: var(--font-bold);
-    padding: 0.4rem 1rem;
-    border-radius: var(--border-radius-md);
-    border: 1px solid var(--accent-yellow);
-    box-shadow: 0 2px 8px rgba(251, 191, 36, 0.2);
-    transition: all var(--transition-base);
-    letter-spacing: 1px;
-}
-
-.team-card:hover .team-badge {
-    background: linear-gradient(135deg, var(--accent-yellow) 0%, var(--accent-yellow-hover) 100%);
-    color: #000000;
-    border-color: var(--accent-yellow-hover);
-    box-shadow: 0 4px 12px rgba(251, 191, 36, 0.4);
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    .scroller-item {
+        width: 300px;
+        height: 190px;
+    }
 }
 
 /* ========================================

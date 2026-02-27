@@ -136,17 +136,9 @@ def index():
     
     print(f"DEBUG: Allowed systems count: {len(allowed_systems)}")
     
-    team_members = [
-        {'nome': 'Tiago Nunes', 'foto': 'tiago-nunes.jpg'},
-        {'nome': 'Guilherme Almeida', 'foto': 'guilherme-almeida.jpg'},
-        {'nome': 'Eduardo Melo', 'foto': 'eduardo-melo.jpg'},
-        {'nome': 'Arthur Monteiro', 'foto': 'team-member.jpg'}
-    ]
-    
     return render_template(
         'index.html',
         sistemas=allowed_systems,
-        team_members=team_members,
         ano_atual=datetime.now().year
     )
 

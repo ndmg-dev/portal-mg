@@ -120,17 +120,17 @@ def index():
         
         if has_access:
             sys_dict = {
-                'id': sistema['id'],
-                'titulo': sistema['name'],
-                'descricao': sistema['description'],
-                'url': sistema['url'],
-                'icone': sistema['icon_class'],
+                'id': sistema.get('id') or '',
+                'titulo': sistema.get('name') or 'Sistema',
+                'descricao': sistema.get('description') or '',
+                'url': sistema.get('url') or '#',
+                'icone': sistema.get('icon_class') or 'default-icon.png',
                 'cta': 'Acessar',
-                'category': sistema['category']
+                'category': sistema.get('category') or 'main'
             }
-            if 'portal' in sistema['id']: sys_dict['cta'] = 'Acessar Portal'
-            elif 'comissao' in sistema['id']: sys_dict['cta'] = 'Calcular Comissão'
-            elif 'ponto' in sistema['id']: sys_dict['cta'] = 'Processar Ponto'
+            if 'portal' in sys_dict['id']: sys_dict['cta'] = 'Acessar Portal'
+            elif 'comissao' in sys_dict['id']: sys_dict['cta'] = 'Calcular Comissão'
+            elif 'ponto' in sys_dict['id']: sys_dict['cta'] = 'Processar Ponto'
             
             allowed_systems.append(sys_dict)
     

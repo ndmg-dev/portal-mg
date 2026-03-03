@@ -22,6 +22,7 @@ from supabase import create_client, Client
 # Import Employee Validation
 from employees import is_valid_email_domain, is_employee_registered
 from admin_routes import admin_bp
+from brevo_mail import send_reset_email
 
 # Carregar variáveis de ambiente
 load_dotenv()
@@ -78,6 +79,9 @@ app.config['MAIL_PASSWORD'] = os.environ.get('MAIL_PASSWORD')
 if not app.config['MAIL_USERNAME']:
     app.config['MAIL_SUPPRESS_SEND'] = True
     app.config['MAIL_DEBUG'] = True
+
+# ── Configuração de Ambiente ──────────────────────────────────────────────────────
+APP_BASE_URL = os.environ.get('APP_BASE_URL', 'http://localhost:5000').rstrip('/')
 
 mail = Mail(app)
 serializer = URLSafeTimedSerializer(app.secret_key)
@@ -331,14 +335,78 @@ def register():
 @app.route('/forgot-password', methods=['GET', 'POST'])
 def forgot_password():
     if request.method == 'POST':
-        email = request.form.get('email').lower().strip()
-        try:
-            auth_client.auth.reset_password_for_email(email)  # usa auth_client
-            flash('Se o email existir, as instruções foram enviadas.', 'info')
-        except Exception as e:
-            flash(f'Erro: {e}', 'error')
+        email = request.form.get('email', '').lower().strip()
+        if email:
+            try:
+                # Verificar se o e-mail existe nos profiles
+                user_res = db.table('profiles').select('id').eq('email', email).execute()
+                if user_res.data:
+                    # Gerar token stateless (contém email + timestamp, expira em 1h)
+                    token = serializer.dumps(email, salt='reset-password')
+                    reset_link = f"{APP_BASE_URL}/reset-password/{token}"
+                    send_reset_email(email, reset_link)
+                else:
+                    # Não revelar se o e-mail existe ou não (segurança)
+                    print(f"[INFO] Reset solicitado para e-mail não cadastrado: {email}")
+            except Exception as e:
+                print(f"[ERROR] Falha no fluxo de forgot-password: {e}")
+        # Sempre mostra a mesma mensagem genérica (evita enumeração de e-mails)
+        flash('Se o e-mail estiver cadastrado, as instruções foram enviadas.', 'info')
         return redirect(url_for('login'))
     return render_template('forgot_password.html')
+
+
+@app.route('/reset-password/<token>', methods=['GET'])
+def reset_password_form(token):
+    """Exibe o formulário de nova senha após validação do token."""
+    try:
+        serializer.loads(token, salt='reset-password', max_age=3600)
+    except Exception:
+        flash('O link de redefinição expirou ou é inválido. Solicite um novo.', 'error')
+        return redirect(url_for('forgot_password'))
+    return render_template('reset_password.html', token=token)
+
+
+@app.route('/reset-password/<token>', methods=['POST'])
+def reset_password_submit(token):
+    """Processa o formulário de nova senha."""
+    # 1. Revalidar token
+    try:
+        email = serializer.loads(token, salt='reset-password', max_age=3600)
+    except Exception:
+        flash('O link de redefinição expirou ou é inválido. Solicite um novo.', 'error')
+        return redirect(url_for('forgot_password'))
+
+    password = request.form.get('password', '')
+    confirm_password = request.form.get('confirm_password', '')
+
+    if len(password) < 8:
+        flash('A senha deve ter no mínimo 8 caracteres.', 'error')
+        return render_template('reset_password.html', token=token)
+
+    if password != confirm_password:
+        flash('As senhas não coincidem.', 'error')
+        return render_template('reset_password.html', token=token)
+
+    # 2. Buscar user_id pelo e-mail
+    try:
+        user_res = db.table('profiles').select('id').eq('email', email).execute()
+        if not user_res.data:
+            flash('Usuário não encontrado.', 'error')
+            return redirect(url_for('login'))
+
+        user_id = user_res.data[0]['id']
+
+        # 3. Atualizar senha via Supabase Admin API
+        auth_client.auth.admin.update_user_by_id(user_id, {"password": password})
+
+        flash('Senha atualizada com sucesso! Faça login com sua nova senha.', 'success')
+        return redirect(url_for('login'))
+
+    except Exception as e:
+        print(f"[ERROR] Falha ao redefinir senha para {email}: {e}")
+        flash('Ocorreu um erro ao redefinir a senha. Tente novamente.', 'error')
+        return render_template('reset_password.html', token=token)
 
 @app.route('/logout')
 @login_required

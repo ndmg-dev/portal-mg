@@ -8,3 +8,5 @@ python-dotenv
 gunicorn
 flask-sqlalchemy
 supabase
+requests
+itsdangerous

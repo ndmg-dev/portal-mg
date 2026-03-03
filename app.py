@@ -33,9 +33,21 @@ app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-key-change-in-production')
 
 # Supabase Client Initialization
+# IMPORTANTE: Dois clientes separados para evitar contaminação de sessão.
+# O SDK Python do Supabase armazena o token JWT do usuário no objeto após
+# sign_in_with_password, fazendo com que queries subsequentes usem o token
+# do usuário (sujeito a RLS) em vez da service_role key.
+#
+# - auth_client: usado APENAS para operações de autenticação (sign_in, sign_out, etc.)
+# - db: usado APENAS para queries de dados (sempre usa service_role, bypassa RLS)
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
 SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+auth_client: Client = create_client(SUPABASE_URL, SUPABASE_KEY)  # Para auth
+db: Client = create_client(SUPABASE_URL, SUPABASE_KEY)           # Para dados (nunca modificado por sign_in)
+
+# Alias para compatibilidade (não usar para auth)
+supabase: Client = db
 
 # Register Blueprints
 app.register_blueprint(admin_bp)
@@ -77,15 +89,15 @@ class User(UserMixin):
         if self.role == 'admin':
             return True
         
-        # Check explicit permission in Supabase
-        response = supabase.table('user_system_access').select('system_id').eq('user_id', self.id).eq('system_id', system_id).execute()
+        # Check explicit permission in Supabase (usa db - service_role key)
+        response = db.table('user_system_access').select('system_id').eq('user_id', self.id).eq('system_id', system_id).execute()
         return len(response.data) > 0
 
 @login_manager.user_loader
 def load_user(user_id):
-    # Fetch from Supabase profiles
+    # Fetch from Supabase profiles (usa db - service_role key, imune a RLS)
     try:
-        response = supabase.table('profiles').select('*').eq('id', user_id).execute()
+        response = db.table('profiles').select('*').eq('id', user_id).execute()
         if response.data:
             u = response.data[0]
             return User(u['id'], u['email'], u['full_name'], u['role'], u['is_active'])
@@ -98,9 +110,9 @@ def load_user(user_id):
 def index():
     print(f"DEBUG: Index access by {current_user.email} (Role: {current_user.role})")
     
-    # Buscar todos os sistemas do Supabase
+    # Buscar todos os sistemas do Supabase (usa db - service_role key, imune a RLS)
     try:
-        response = supabase.table('systems').select('*').execute()
+        response = db.table('systems').select('*').execute()
         all_systems = response.data
         print(f"DEBUG: Total systems found in DB: {len(all_systems)}")
     except Exception as e:
@@ -158,15 +170,15 @@ def login():
             return render_template('login.html')
         
         try:
-            # 1. Authenticate with Supabase
-            auth_response = supabase.auth.sign_in_with_password({"email": email, "password": password})
+            # 1. Authenticate with Supabase (usa auth_client - separado do db!)
+            auth_response = auth_client.auth.sign_in_with_password({"email": email, "password": password})
             
             if auth_response.user:
                 user_id = auth_response.user.id
                 print(f"DEBUG: Auth success for: {user_id}")
                 
-                # 2. Sync Profile (Ensure it exists in profiles table)
-                profile_res = supabase.table('profiles').select('*').eq('id', user_id).execute()
+                # 2. Sync Profile (usa db - service_role key, nunca afetado pelo sign_in)
+                profile_res = db.table('profiles').select('*').eq('id', user_id).execute()
                 
                 if not profile_res.data:
                     print(f"DEBUG: Profile missing for {email}. Creating...")
@@ -177,13 +189,13 @@ def login():
                     role = 'admin' if email in ADMIN_EMAILS else 'user'
                     
                     try:
-                        supabase.table('profiles').insert({
+                        db.table('profiles').insert({
                             'id': user_id,
                             'email': email,
                             'full_name': full_name,
                             'role': role
                         }).execute()
-                        profile_res = supabase.table('profiles').select('*').eq('id', user_id).execute()
+                        profile_res = db.table('profiles').select('*').eq('id', user_id).execute()
                     except Exception as insert_err:
                         print(f"DEBUG: Failed to auto-create profile: {insert_err}")
                 
@@ -247,7 +259,7 @@ def register():
         try:
             print(f"DEBUG: Attempting to create user: {email}")
             # Use Admin API to create user without requiring email confirmation
-            auth_response = supabase.auth.admin.create_user({
+            auth_response = auth_client.auth.admin.create_user({
                 "email": email, 
                 "password": password,
                 "email_confirm": True,
@@ -268,7 +280,7 @@ def register():
                 # Fallback to normal sign up if admin is blocked
                 print("DEBUG: Admin create failed, falling back to sign_up")
                 try:
-                    auth_response = supabase.auth.sign_up({
+                    auth_response = auth_client.auth.sign_up({
                         "email": email,
                         "password": password,
                         "options": {"data": {"full_name": name}}
@@ -289,7 +301,7 @@ def forgot_password():
     if request.method == 'POST':
         email = request.form.get('email').lower().strip()
         try:
-            supabase.auth.reset_password_for_email(email)
+            auth_client.auth.reset_password_for_email(email)  # usa auth_client
             flash('Se o email existir, as instruções foram enviadas.', 'info')
         except Exception as e:
             flash(f'Erro: {e}', 'error')
@@ -300,7 +312,7 @@ def forgot_password():
 @login_required
 def logout():
     try:
-        supabase.auth.sign_out()
+        auth_client.auth.sign_out()  # usa auth_client, não db
     except:
         pass
     logout_user()

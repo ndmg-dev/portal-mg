@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Erro {{ code }} - Central de Sistemas</title>
+    <link rel="icon" type="image/png" href="{{ url_for('static', filename='img/favicon-auth.png') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/auth.css') }}">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        .error-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            text-align: center;
+            padding: 2rem;
+        }
+
+        .error-code {
+            font-size: 7rem;
+            font-weight: 700;
+            line-height: 1;
+            background: linear-gradient(135deg, #fbbf24, #f59e0b);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 0.5rem;
+        }
+
+        .error-titulo {
+            font-size: 1.5rem;
+            font-weight: 600;
+            color: var(--text-primary, #fff);
+            margin-bottom: 0.75rem;
+        }
+
+        .error-mensagem {
+            color: var(--text-secondary, #9ca3af);
+            max-width: 420px;
+            margin-bottom: 2rem;
+            line-height: 1.6;
+        }
+
+        .btn-voltar {
+            display: inline-block;
+            padding: 0.75rem 1.75rem;
+            background: linear-gradient(135deg, #fbbf24, #f59e0b);
+            color: #1a1a1a;
+            font-weight: 600;
+            border-radius: 8px;
+            text-decoration: none;
+            transition: opacity 0.2s;
+        }
+
+        .btn-voltar:hover {
+            opacity: 0.88;
+        }
+
+        .error-logo {
+            width: 72px;
+            margin-bottom: 1.5rem;
+            opacity: 0.85;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="error-container">
+        <img src="{{ url_for('static', filename='img/logo-mg.png') }}" alt="Logo Mendonça Galvão" class="error-logo">
+
+        <div class="error-code">{{ code }}</div>
+        <h1 class="error-titulo">{{ titulo }}</h1>
+        <p class="error-mensagem">{{ mensagem }}</p>
+
+        <a href="{{ url_for('index') }}" class="btn-voltar">← Voltar ao início</a>
+    </div>
+</body>
+
+</html>

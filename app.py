@@ -29,8 +29,24 @@ load_dotenv()
 # Inicializar aplicação Flask
 app = Flask(__name__)
 
-# Configurações
-app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-key-change-in-production')
+# ── Configurações ────────────────────────────────────────────────────────────
+# SECRET_KEY é obrigatória. O servidor crasha com mensagem clara se não estiver
+# configurada, evitando subir em produção com chave padrão fraca.
+_secret_key = os.environ.get('SECRET_KEY')
+if not _secret_key:
+    raise RuntimeError(
+        "[FATAL] SECRET_KEY não configurada! "
+        "Adicione SECRET_KEY=<valor seguro> no arquivo .env antes de iniciar."
+    )
+app.secret_key = _secret_key
+
+# ── Constantes de Acesso ──────────────────────────────────────────────────────
+# Emails com role admin concedida automaticamente no primeiro login.
+# Use set para lookup O(1).
+ADMIN_EMAILS = {
+    "admin@mendoncagalvao.com.br",
+    "arthur.monteiro@mendoncagalvao.com.br",
+}
 
 # Supabase Client Initialization
 # IMPORTANTE: Dois clientes separados para evitar contaminação de sessão.
@@ -85,11 +101,17 @@ class User(UserMixin):
     def is_active(self):
         return self._is_active
 
-    def has_access(self, system_id):
+    def has_access(self, system_id, user_access_set=None):
+        """Verifica se o usuário tem acesso ao sistema.
+        
+        Prefira passar user_access_set (pré-carregado) para evitar N queries.
+        Se não fornecido, faz uma query pontual (uso legado).
+        """
         if self.role == 'admin':
             return True
-        
-        # Check explicit permission in Supabase (usa db - service_role key)
+        if user_access_set is not None:
+            return system_id in user_access_set
+        # Fallback: query pontual (evitar quando possível)
         response = db.table('user_system_access').select('system_id').eq('user_id', self.id).eq('system_id', system_id).execute()
         return len(response.data) > 0
 
@@ -101,8 +123,8 @@ def load_user(user_id):
         if response.data:
             u = response.data[0]
             return User(u['id'], u['email'], u['full_name'], u['role'], u['is_active'])
-    except:
-        pass
+    except Exception as e:
+        print(f"[WARN] load_user falhou para {user_id}: {e}")
     return None
 
 @app.route('/')
@@ -110,40 +132,51 @@ def load_user(user_id):
 def index():
     print(f"DEBUG: Index access by {current_user.email} (Role: {current_user.role})")
     
-    # Buscar todos os sistemas do Supabase (usa db - service_role key, imune a RLS)
+    # ── 1 query: buscar todos os sistemas ────────────────────────────────────
     try:
         response = db.table('systems').select('*').execute()
         all_systems = response.data
         print(f"DEBUG: Total systems found in DB: {len(all_systems)}")
     except Exception as e:
-        print(f"DEBUG: Error fetching systems: {e}")
+        print(f"[ERROR] Falha ao buscar sistemas: {e}")
         all_systems = []
+    
+    # ── 1 query: buscar todos os acessos do usuário de uma vez ───────────────
+    # Evita N queries (uma por sistema) dentro do loop.
+    user_access_set = set()
+    if current_user.role != 'admin':
+        try:
+            access_res = db.table('user_system_access').select('system_id').eq('user_id', current_user.id).execute()
+            user_access_set = {a['system_id'] for a in access_res.data}
+        except Exception as e:
+            print(f"[ERROR] Falha ao buscar acessos do usuário {current_user.id}: {e}")
+    
+    # ── Filtrar sistemas permitidos ──────────────────────────────────────────
+    CTA_MAP = {
+        'portal':   'Acessar Portal',
+        'comissao': 'Calcular Comissão',
+        'ponto':    'Processar Ponto',
+    }
     
     allowed_systems = []
     for sistema in all_systems:
-        # Debugging access for each system
         is_public = sistema.get('is_public')
-        has_explicit_access = current_user.has_access(sistema['id'])
-        
-        # Admin ALWAYS gets access
-        has_access = (current_user.role == 'admin') or is_public or has_explicit_access
+        has_access = current_user.has_access(sistema['id'], user_access_set=user_access_set)
         
         print(f"DEBUG: System {sistema['id']} | Category: {sistema['category']} | Public: {is_public} | Access: {has_access}")
         
-        if has_access:
+        if has_access or is_public:
+            sys_id = sistema.get('id') or ''
+            cta = next((label for key, label in CTA_MAP.items() if key in sys_id), 'Acessar')
             sys_dict = {
-                'id': sistema.get('id') or '',
+                'id': sys_id,
                 'titulo': sistema.get('name') or 'Sistema',
                 'descricao': sistema.get('description') or '',
                 'url': sistema.get('url') or '#',
                 'icone': sistema.get('icon_class') or 'default-icon.png',
-                'cta': 'Acessar',
-                'category': sistema.get('category') or 'main'
+                'cta': cta,
+                'category': sistema.get('category') or 'main',
             }
-            if 'portal' in sys_dict['id']: sys_dict['cta'] = 'Acessar Portal'
-            elif 'comissao' in sys_dict['id']: sys_dict['cta'] = 'Calcular Comissão'
-            elif 'ponto' in sys_dict['id']: sys_dict['cta'] = 'Processar Ponto'
-            
             allowed_systems.append(sys_dict)
     
     print(f"DEBUG: Allowed systems count: {len(allowed_systems)}")
@@ -185,7 +218,6 @@ def login():
                     # Get full name from metadata if possible
                     full_name = auth_response.user.user_metadata.get('full_name', email.split('@')[0])
                     # Auto-assign admin if in list
-                    ADMIN_EMAILS = ["admin@mendoncagalvao.com.br", "arthur.monteiro@mendoncagalvao.com.br"]
                     role = 'admin' if email in ADMIN_EMAILS else 'user'
                     
                     try:
@@ -312,9 +344,9 @@ def forgot_password():
 @login_required
 def logout():
     try:
-        auth_client.auth.sign_out()  # usa auth_client, não db
-    except:
-        pass
+        auth_client.auth.sign_out()
+    except Exception as e:
+        print(f"[WARN] Falha ao fazer sign_out no Supabase: {e}")
     logout_user()
     flash('Você saiu com sucesso.', 'info')
     return redirect(url_for('login'))
@@ -325,11 +357,14 @@ def privacidade():
 
 @app.errorhandler(404)
 def page_not_found(e):
-    return render_template('index.html'), 404
+    return render_template('error.html', code=404, titulo='Página não encontrada',
+                           mensagem='O endereço que você acessou não existe ou foi removido.'), 404
 
 @app.errorhandler(500)
 def internal_error(e):
-    return render_template('index.html'), 500
+    print(f"[ERROR] Erro interno 500: {e}")
+    return render_template('error.html', code=500, titulo='Erro interno',
+                           mensagem='Algo deu errado no servidor. Tente novamente em instantes.'), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))

@@ -305,39 +305,38 @@ def login_google():
         print(f"[ERROR] Falha ao iniciar Google OAuth: {e}")
         flash('Não foi possível iniciar o login com o Google. Tente novamente.', 'error')
         return redirect(url_for('login'))
-        if profile_res.data:
-            u = profile_res.data[0]
-            if not u['is_active']:
-                auth_client.auth.sign_out()
-                flash('Sua conta foi desativada.', 'error')
-                return redirect(url_for('login'))
-                
-            # Autenticar no Flask-Login usando a mesma classe existente
-            flask_user = User(u['id'], u['email'], u['full_name'], u['role'], u['is_active'])
-            login_user(flask_user)
-            
-            next_page = request.args.get('next')
-            return redirect(next_page) if next_page else redirect(url_for('index'))
-        else:
-            auth_client.auth.sign_out()
-            flash('Erro ao processar seu perfil corporativo.', 'error')
-            return redirect(url_for('login'))
-            
-    except Exception as e:
-        print(f"[ERROR] Exceção em auth_callback: {e}")
-        flash('Ocorreu um problema ao validar seu login. Tente novamente.', 'error')
-        return redirect(url_for('login'))
-@app.route('/logout')
-@login_required
-def logout():
-    try:
-        auth_client.auth.sign_out()
-    except Exception as e:
-        print(f"[WARN] Falha ao fazer sign_out no Supabase: {e}")
-    logout_user()
-    flash('Você saiu com sucesso.', 'info')
-    return redirect(url_for('login'))
+            return True
+        if user_access_set is not None:
+            return system_id in user_access_set
+        # Fallback: query pontual (evitar quando possível)
+        response = db.table('user_system_access').select('system_id').eq('user_id', self.id).eq('system_id', system_id).execute()
+        return len(response.data) > 0
 
+@login_manager.user_loader
+def load_user(user_id):
+    # Fetch from Supabase profiles (usa db - service_role key, imune a RLS)
+    try:
+        response = db.table('profiles').select('*').eq('id', user_id).execute()
+        if response.data:
+            u = response.data[0]
+            return User(u['id'], u['email'], u['full_name'], u['role'], u['is_active'])
+    except Exception as e:
+        print(f"[WARN] load_user falhou para {user_id}: {e}")
+    return None
+
+@app.route('/')
+@login_required
+def index():
+    print(f"DEBUG: Index access by {current_user.email} (Role: {current_user.role})")
+    
+    # ── 1 query: buscar todos os sistemas ────────────────────────────────────
+    try:
+        response = db.table('systems').select('*').execute()
+        all_systems = response.data
+        print(f"DEBUG: Total systems found in DB: {len(all_systems)}")
+    except Exception as e:
+        print(f"[ERROR] Falha ao buscar sistemas: {e}")
+        all_systems = []
     
     # ── 1 query: buscar todos os acessos do usuário de uma vez ───────────────
     # Evita N queries (uma por sistema) dentro do loop.
@@ -385,33 +384,97 @@ def logout():
         ano_atual=datetime.now().year
     )
 
+@app.route('/login')
+def login():
+    if current_user.is_authenticated:
+        return redirect(url_for('index'))
+        
+    print(f"DEBUG LOGIN ROUTE - args: {request.args}")
+        
+    # Verifica se há código OAuth "vazado" no redirecionamento do Flask-Login para a raiz.
+    # Exemplo de URL gerada: /login?next=%2F%3Fcode%3Dd7df1c62-3ca5-486d-9160-8ca9cc5282e1
+    code = request.args.get('code')
+    
+    # Se o Flask-Login interceptou a tentativa na raiz (/), o código vai estar em "next"
+    next_param = request.args.get('next')
+    print(f"DEBUG LOGIN ROUTE - code: {code}, next: {next_param}")
+    
+    if not code and next_param and '?code=' in next_param:
+        code_str = next_param.split('?code=')[1].split('&')[0]
+        if code_str:
+            code = code_str
+            print(f"DEBUG LOGIN ROUTE - extracted code from next: {code}")
+            
+    # Processa o login OAuth caso possua um code do Google.
+    if code:
+        print(f"DEBUG LOGIN ROUTE - calling process_oauth_callback with code {code}")
+        return process_oauth_callback(code)
 
-@app.route('/logout')
-@login_required
-def logout():
+    return render_template('login.html')
+
+def process_oauth_callback(code):
+    """Lida com a conversão do código OAuth do Google em sessão Supabase/Flask-Login."""
     try:
-        auth_client.auth.sign_out()
+        # Troca o código pela sessão no Supabase
+        auth_response = auth_client.auth.exchange_code_for_session({"auth_code": code})
+        
+        if not auth_response.user:
+            flash('Falha ao obter dados do usuário via Google.', 'error')
+            return redirect(url_for('login'))
+            
+        user = auth_response.user
+        email = user.email.lower()
+        
+        print(f"DEBUG: Auth success via Google para: {user.id} ({email})")
+        
+        # 1. Validação de domínio estrita no backend
+        if not email.endswith('@mendoncagalvao.com.br'):
+            print(f"[WARN] Tentativa de login com e-mail fora do domínio corporativo: {email}")
+            auth_client.auth.sign_out()
+            flash('Você deve usar um e-mail corporativo @mendoncagalvao.com.br para acessar a central.', 'error')
+            return redirect(url_for('login'))
+            
+        # 2. Sincronizar usuário na tabela `profiles`
+        profile_res = db.table('profiles').select('*').eq('id', user.id).execute()
+        
+        if not profile_res.data:
+            print(f"DEBUG: Profile missing for {email}. Creating...")
+            full_name = user.user_metadata.get('full_name', email.split('@')[0])
+            role = 'admin' if email in ADMIN_EMAILS else 'user'
+            
+            try:
+                db.table('profiles').insert({
+                    'id': user.id,
+                    'email': email,
+                    'full_name': full_name,
+                    'role': role
+                }).execute()
+                profile_res = db.table('profiles').select('*').eq('id', user.id).execute()
+            except Exception as insert_err:
+                print(f"[ERROR] Failed to auto-create profile for {email}: {insert_err}")
+                
+        if profile_res.data:
+            u = profile_res.data[0]
+            if not u['is_active']:
+                auth_client.auth.sign_out()
+                flash('Sua conta foi desativada.', 'error')
+                return redirect(url_for('login'))
+                
+            # Autenticar no Flask-Login
+            flask_user = User(u['id'], u['email'], u['full_name'], u['role'], u['is_active'])
+            login_user(flask_user)
+            return redirect(url_for('index'))
+        else:
+            auth_client.auth.sign_out()
+            flash('Erro ao processar seu perfil corporativo.', 'error')
+            return redirect(url_for('login'))
+            
     except Exception as e:
-        print(f"[WARN] Falha ao fazer sign_out no Supabase: {e}")
-    logout_user()
-    flash('Você saiu com sucesso.', 'info')
-    return redirect(url_for('login'))
+        print(f"[ERROR] Exceção na captura do callback OAuth: {e}")
+        # A API pode acusar que o 'code' já foi usado caso ele seja um redirecionamento duplicado (Refresh de tela).
+        if 'code pkce' not in str(e).lower() and 'already used' not in str(e).lower():
+            flash('Ocorreu um problema ao validar seu login com o Google. Tente novamente.', 'error')
+        return redirect(url_for('login'))
 
-@app.route('/privacidade')
-def privacidade():
-    return render_template('privacidade.html', data_atualizacao=datetime.now().strftime('%d/%m/%Y'), ano_atual=datetime.now().year)
 
-@app.errorhandler(404)
-def page_not_found(e):
-    return render_template('error.html', code=404, titulo='Página não encontrada',
-                           mensagem='O endereço que você acessou não existe ou foi removido.'), 404
 
-@app.errorhandler(500)
-def internal_error(e):
-    print(f"[ERROR] Erro interno 500: {e}")
-    return render_template('error.html', code=500, titulo='Erro interno',
-                           mensagem='Algo deu errado no servidor. Tente novamente em instantes.'), 500
-
-if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', port=port)

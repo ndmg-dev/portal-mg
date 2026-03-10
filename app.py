@@ -20,9 +20,7 @@ from itsdangerous import URLSafeTimedSerializer
 from supabase import create_client, Client
 
 # Import Employee Validation
-from employees import is_valid_email_domain, is_employee_registered
 from admin_routes import admin_bp
-from brevo_mail import send_reset_email
 
 # Carregar variáveis de ambiente
 load_dotenv()
@@ -191,223 +189,340 @@ def index():
         ano_atual=datetime.now().year
     )
 
-@app.route('/login', methods=['GET', 'POST'])
+@app.route('/login')
 def login():
     if current_user.is_authenticated:
         return redirect(url_for('index'))
+        
+    print(f"DEBUG LOGIN ROUTE - args: {request.args}")
+        
+    # Verifica se há código OAuth "vazado" no redirecionamento do Flask-Login para a raiz.
+    # Exemplo de URL gerada: /login?next=%2F%3Fcode%3Dd7df1c62-3ca5-486d-9160-8ca9cc5282e1
+    code = request.args.get('code')
     
-    if request.method == 'POST':
-        email = request.form.get('email', '').lower().strip()
-        password = request.form.get('password', '')
-        
-        print(f"DEBUG: Login attempt for: {email}")
-        
-        if not email or not password:
-            flash('Por favor, preencha todos os campos.', 'error')
-            return render_template('login.html')
-        
-        try:
-            # 1. Authenticate with Supabase (usa auth_client - separado do db!)
-            auth_response = auth_client.auth.sign_in_with_password({"email": email, "password": password})
+    # Se o Flask-Login interceptou a tentativa na raiz (/), o código vai estar em "next"
+    next_param = request.args.get('next')
+    print(f"DEBUG LOGIN ROUTE - code: {code}, next: {next_param}")
+    
+    if not code and next_param and '?code=' in next_param:
+        code_str = next_param.split('?code=')[1].split('&')[0]
+        if code_str:
+            code = code_str
+            print(f"DEBUG LOGIN ROUTE - extracted code from next: {code}")
             
-            if auth_response.user:
-                user_id = auth_response.user.id
-                print(f"DEBUG: Auth success for: {user_id}")
-                
-                # 2. Sync Profile (usa db - service_role key, nunca afetado pelo sign_in)
-                profile_res = db.table('profiles').select('*').eq('id', user_id).execute()
-                
-                if not profile_res.data:
-                    print(f"DEBUG: Profile missing for {email}. Creating...")
-                    # Get full name from metadata if possible
-                    full_name = auth_response.user.user_metadata.get('full_name', email.split('@')[0])
-                    # Auto-assign admin if in list
-                    role = 'admin' if email in ADMIN_EMAILS else 'user'
-                    
-                    try:
-                        db.table('profiles').insert({
-                            'id': user_id,
-                            'email': email,
-                            'full_name': full_name,
-                            'role': role
-                        }).execute()
-                        profile_res = db.table('profiles').select('*').eq('id', user_id).execute()
-                    except Exception as insert_err:
-                        print(f"DEBUG: Failed to auto-create profile: {insert_err}")
-                
-                if profile_res.data:
-                    u = profile_res.data[0]
-                    if not u['is_active']:
-                        flash('Conta desativada.', 'error')
-                        return render_template('login.html')
-                    
-                    user = User(u['id'], u['email'], u['full_name'], u['role'], u['is_active'])
-                    login_user(user)
-                    
-                    next_page = request.args.get('next')
-                    return redirect(next_page) if next_page else redirect(url_for('index'))
-                else:
-                    flash('Erro ao carregar perfil do usuário.', 'error')
-                    return render_template('login.html')
-                    
-        except Exception as e:
-            print(f"DEBUG: Login Exception: {e}")
-            error_msg = str(e).lower()
-            if 'invalid login credentials' in error_msg:
-                flash('Email ou senha incorretos.', 'error')
-            else:
-                flash(f'Erro na autenticação: {e}', 'error')
-            return render_template('login.html')
-            
+    # Processa o login OAuth caso possua um code do Google.
+    if code:
+        print(f"DEBUG LOGIN ROUTE - calling process_oauth_callback with code {code}")
+        return process_oauth_callback(code)
+
     return render_template('login.html')
 
-@app.route('/register', methods=['GET', 'POST'])
-def register():
+def process_oauth_callback(code):
+    """Lida com a conversão do código OAuth do Google em sessão Supabase/Flask-Login."""
+    try:
+        # Troca o código pela sessão no Supabase
+        auth_response = auth_client.auth.exchange_code_for_session({"auth_code": code})
+        
+        if not auth_response.user:
+            flash('Falha ao obter dados do usuário via Google.', 'error')
+            return redirect(url_for('login'))
+            
+        user = auth_response.user
+        email = user.email.lower()
+        
+        print(f"DEBUG: Auth success via Google para: {user.id} ({email})")
+        
+        # 1. Validação de domínio estrita no backend
+        if not email.endswith('@mendoncagalvao.com.br'):
+            print(f"[WARN] Tentativa de login com e-mail fora do domínio corporativo: {email}")
+            auth_client.auth.sign_out()
+            flash('Você deve usar um e-mail corporativo @mendoncagalvao.com.br para acessar a central.', 'error')
+            return redirect(url_for('login'))
+            
+        # 2. Sincronizar usuário na tabela `profiles`
+        profile_res = db.table('profiles').select('*').eq('id', user.id).execute()
+        
+        if not profile_res.data:
+            print(f"DEBUG: Profile missing for {email}. Creating...")
+            full_name = user.user_metadata.get('full_name', email.split('@')[0])
+            role = 'admin' if email in ADMIN_EMAILS else 'user'
+            
+            try:
+                db.table('profiles').insert({
+                    'id': user.id,
+                    'email': email,
+                    'full_name': full_name,
+                    'role': role
+                }).execute()
+                profile_res = db.table('profiles').select('*').eq('id', user.id).execute()
+            except Exception as insert_err:
+                print(f"[ERROR] Failed to auto-create profile for {email}: {insert_err}")
+                
+        if profile_res.data:
+            u = profile_res.data[0]
+            if not u['is_active']:
+                auth_client.auth.sign_out()
+                flash('Sua conta foi desativada.', 'error')
+                return redirect(url_for('login'))
+                
+            # Autenticar no Flask-Login
+            flask_user = User(u['id'], u['email'], u['full_name'], u['role'], u['is_active'])
+            login_user(flask_user)
+            return redirect(url_for('index'))
+        else:
+            auth_client.auth.sign_out()
+            flash('Erro ao processar seu perfil corporativo.', 'error')
+            return redirect(url_for('login'))
+            
+    except Exception as e:
+        print(f"[ERROR] Exceção na captura do callback OAuth: {e}")
+        # A API pode acusar que o 'code' já foi usado caso ele seja um redirecionamento duplicado (Refresh de tela).
+        if 'code pkce' not in str(e).lower() and 'already used' not in str(e).lower():
+            flash('Ocorreu um problema ao validar seu login com o Google. Tente novamente.', 'error')
+        return redirect(url_for('login'))
+
+
+@app.route('/login/google')
+def login_google():
+    """Inicia o fluxo de login OAuth do Google."""
     if current_user.is_authenticated:
         return redirect(url_for('index'))
-    
-    if request.method == 'POST':
-        name = request.form.get('name', '').strip()
-        email = request.form.get('email', '').lower().strip()
-        password = request.form.get('password', '')
-        confirm_password = request.form.get('confirm_password', '')
         
-        if not all([name, email, password, confirm_password]):
-            flash('Por favor, preencha todos os campos.', 'error')
-            return render_template('register.html')
+    try:
+        # Omite o redirect_to forçado que dava conflito HTTP x HTTPS ou URLs não cadastradas na V1 para usar de fallback a raiz.
+        response = auth_client.auth.sign_in_with_oauth({
+            "provider": "google",
+            "options": {
+                "query_params": {
+                    "hd": "mendoncagalvao.com.br",
+                    "prompt": "select_account"
+                }
+            }
+        })
         
-        if not is_valid_email_domain(email):
-            flash('Email deve ser do domínio @mendoncagalvao.com.br', 'error')
-            return render_template('register.html')
-            
-        if not is_employee_registered(email):
-            flash('Email não encontrado na base de funcionários.', 'error')
-            return render_template('register.html')
-            
-        if len(password) < 8:
-            flash('A senha deve ter no mínimo 8 caracteres.', 'error')
-            return render_template('register.html')
-            
-        if password != confirm_password:
-            flash('As senhas não coincidem.', 'error')
-            return render_template('register.html')
-            
-        try:
-            print(f"DEBUG: Attempting to create user: {email}")
-            # Use Admin API to create user without requiring email confirmation
-            auth_response = auth_client.auth.admin.create_user({
-                "email": email, 
-                "password": password,
-                "email_confirm": True,
-                "user_metadata": {"full_name": name}
-            })
-            
-            if auth_response:
-                print(f"DEBUG: User created successfully: {email}")
-                flash('Cadastro realizado com sucesso! Você já pode fazer login.', 'success')
-                return redirect(url_for('login'))
-        except Exception as e:
-            print(f"DEBUG: Registration Exception: {e}")
-            error_msg = str(e).lower()
-            if "user already exists" in error_msg:
-                flash('Este email já está cadastrado.', 'info')
-                return redirect(url_for('login'))
-            elif "not allowed" in error_msg:
-                # Fallback to normal sign up if admin is blocked
-                print("DEBUG: Admin create failed, falling back to sign_up")
-                try:
-                    auth_response = auth_client.auth.sign_up({
-                        "email": email,
-                        "password": password,
-                        "options": {"data": {"full_name": name}}
-                    })
-                    if auth_response.user:
-                        flash('Cadastro realizado! Por favor, verifique seu e-mail para ativar a conta.', 'info')
-                        return redirect(url_for('login'))
-                except Exception as signup_err:
-                     flash(f'Erro no registro: {signup_err}', 'error')
-            else:
-                flash(f'Erro no registro: {e}', 'error')
-            return render_template('register.html')
-            
-    return render_template('register.html')
-
-@app.route('/forgot-password', methods=['GET', 'POST'])
-def forgot_password():
-    if request.method == 'POST':
-        email = request.form.get('email', '').lower().strip()
-        if email:
-            try:
-                # Verificar se o e-mail existe nos profiles
-                user_res = db.table('profiles').select('id').eq('email', email).execute()
-                if user_res.data:
-                    # Gerar token stateless (contém email + timestamp, expira em 1h)
-                    token = serializer.dumps(email, salt='reset-password')
-                    reset_link = f"{APP_BASE_URL}/reset-password/{token}"
-                    send_reset_email(email, reset_link)
-                else:
-                    # Não revelar se o e-mail existe ou não (segurança)
-                    print(f"[INFO] Reset solicitado para e-mail não cadastrado: {email}")
-            except Exception as e:
-                print(f"[ERROR] Falha no fluxo de forgot-password: {e}")
-        # Sempre mostra a mesma mensagem genérica (evita enumeração de e-mails)
-        flash('Se o e-mail estiver cadastrado, as instruções foram enviadas.', 'info')
-        return redirect(url_for('login'))
-    return render_template('forgot_password.html')
-
-
-@app.route('/reset-password/<token>', methods=['GET'])
-def reset_password_form(token):
-    """Exibe o formulário de nova senha após validação do token."""
-    try:
-        serializer.loads(token, salt='reset-password', max_age=3600)
-    except Exception:
-        flash('O link de redefinição expirou ou é inválido. Solicite um novo.', 'error')
-        return redirect(url_for('forgot_password'))
-    return render_template('reset_password.html', token=token)
-
-
-@app.route('/reset-password/<token>', methods=['POST'])
-def reset_password_submit(token):
-    """Processa o formulário de nova senha."""
-    # 1. Revalidar token
-    try:
-        email = serializer.loads(token, salt='reset-password', max_age=3600)
-    except Exception:
-        flash('O link de redefinição expirou ou é inválido. Solicite um novo.', 'error')
-        return redirect(url_for('forgot_password'))
-
-    password = request.form.get('password', '')
-    confirm_password = request.form.get('confirm_password', '')
-
-    if len(password) < 8:
-        flash('A senha deve ter no mínimo 8 caracteres.', 'error')
-        return render_template('reset_password.html', token=token)
-
-    if password != confirm_password:
-        flash('As senhas não coincidem.', 'error')
-        return render_template('reset_password.html', token=token)
-
-    # 2. Buscar user_id pelo e-mail
-    try:
-        user_res = db.table('profiles').select('id').eq('email', email).execute()
-        if not user_res.data:
-            flash('Usuário não encontrado.', 'error')
-            return redirect(url_for('login'))
-
-        user_id = user_res.data[0]['id']
-
-        # 3. Atualizar senha via Supabase Admin API
-        auth_client.auth.admin.update_user_by_id(user_id, {"password": password})
-
-        flash('Senha atualizada com sucesso! Faça login com sua nova senha.', 'success')
-        return redirect(url_for('login'))
-
+        return redirect(response.url)
     except Exception as e:
-        print(f"[ERROR] Falha ao redefinir senha para {email}: {e}")
-        flash('Ocorreu um erro ao redefinir a senha. Tente novamente.', 'error')
-        return render_template('reset_password.html', token=token)
+        print(f"[ERROR] Falha ao iniciar Google OAuth: {e}")
+        flash('Não foi possível iniciar o login com o Google. Tente novamente.', 'error')
+        return redirect(url_for('login'))
+        if profile_res.data:
+            u = profile_res.data[0]
+            if not u['is_active']:
+                auth_client.auth.sign_out()
+                flash('Sua conta foi desativada.', 'error')
+                return redirect(url_for('login'))
+                
+            # Autenticar no Flask-Login usando a mesma classe existente
+            flask_user = User(u['id'], u['email'], u['full_name'], u['role'], u['is_active'])
+            login_user(flask_user)
+            
+            next_page = request.args.get('next')
+            return redirect(next_page) if next_page else redirect(url_for('index'))
+        else:
+            auth_client.auth.sign_out()
+            flash('Erro ao processar seu perfil corporativo.', 'error')
+            return redirect(url_for('login'))
+            
+    except Exception as e:
+        print(f"[ERROR] Exceção em auth_callback: {e}")
+        flash('Ocorreu um problema ao validar seu login. Tente novamente.', 'error')
+        return redirect(url_for('login'))
+@app.route('/logout')
+@login_required
+def logout():
+    try:
+        auth_client.auth.sign_out()
+    except Exception as e:
+        print(f"[WARN] Falha ao fazer sign_out no Supabase: {e}")
+    logout_user()
+    flash('Você saiu com sucesso.', 'info')
+    return redirect(url_for('login'))
 
+    
+    # ── 1 query: buscar todos os acessos do usuário de uma vez ───────────────
+    # Evita N queries (uma por sistema) dentro do loop.
+    user_access_set = set()
+    if current_user.role != 'admin':
+        try:
+            access_res = db.table('user_system_access').select('system_id').eq('user_id', current_user.id).execute()
+            user_access_set = {a['system_id'] for a in access_res.data}
+        except Exception as e:
+            print(f"[ERROR] Falha ao buscar acessos do usuário {current_user.id}: {e}")
+    
+    # ── Filtrar sistemas permitidos ──────────────────────────────────────────
+    CTA_MAP = {
+        'portal':   'Acessar Portal',
+        'comissao': 'Calcular Comissão',
+        'ponto':    'Processar Ponto',
+    }
+    
+    allowed_systems = []
+    for sistema in all_systems:
+        is_public = sistema.get('is_public')
+        has_access = current_user.has_access(sistema['id'], user_access_set=user_access_set)
+        
+        print(f"DEBUG: System {sistema['id']} | Category: {sistema['category']} | Public: {is_public} | Access: {has_access}")
+        
+        if has_access or is_public:
+            sys_id = sistema.get('id') or ''
+            cta = next((label for key, label in CTA_MAP.items() if key in sys_id), 'Acessar')
+            sys_dict = {
+                'id': sys_id,
+                'titulo': sistema.get('name') or 'Sistema',
+                'descricao': sistema.get('description') or '',
+                'url': sistema.get('url') or '#',
+                'icone': sistema.get('icon_class') or 'default-icon.png',
+                'cta': cta,
+                'category': sistema.get('category') or 'main',
+            }
+            allowed_systems.append(sys_dict)
+    
+    print(f"DEBUG: Allowed systems count: {len(allowed_systems)}")
+    
+    return render_template(
+        'index.html',
+        sistemas=allowed_systems,
+        ano_atual=datetime.now().year
+    )
+
+@app.route('/login')
+def login():
+    if current_user.is_authenticated:
+        return redirect(url_for('index'))
+        
+    print(f"DEBUG LOGIN ROUTE - args: {request.args}")
+        
+    # Verifica se há código OAuth "vazado" no redirecionamento do Flask-Login para a raiz.
+    # Exemplo de URL gerada: /login?next=%2F%3Fcode%3Dd7df1c62-3ca5-486d-9160-8ca9cc5282e1
+    code = request.args.get('code')
+    
+    # Se o Flask-Login interceptou a tentativa na raiz (/), o código vai estar em "next"
+    next_param = request.args.get('next')
+    print(f"DEBUG LOGIN ROUTE - code: {code}, next: {next_param}")
+    
+    if not code and next_param and '?code=' in next_param:
+        code_str = next_param.split('?code=')[1].split('&')[0]
+        if code_str:
+            code = code_str
+            print(f"DEBUG LOGIN ROUTE - extracted code from next: {code}")
+            
+    # Processa o login OAuth caso possua um code do Google.
+    if code:
+        print(f"DEBUG LOGIN ROUTE - calling process_oauth_callback with code {code}")
+        return process_oauth_callback(code)
+
+    return render_template('login.html')
+
+def process_oauth_callback(code):
+    """Lida com a conversão do código OAuth do Google em sessão Supabase/Flask-Login."""
+    try:
+        # Troca o código pela sessão no Supabase
+        auth_response = auth_client.auth.exchange_code_for_session({"auth_code": code})
+        
+        if not auth_response.user:
+            flash('Falha ao obter dados do usuário via Google.', 'error')
+            return redirect(url_for('login'))
+            
+        user = auth_response.user
+        email = user.email.lower()
+        
+        print(f"DEBUG: Auth success via Google para: {user.id} ({email})")
+        
+        # 1. Validação de domínio estrita no backend
+        if not email.endswith('@mendoncagalvao.com.br'):
+            print(f"[WARN] Tentativa de login com e-mail fora do domínio corporativo: {email}")
+            auth_client.auth.sign_out()
+            flash('Você deve usar um e-mail corporativo @mendoncagalvao.com.br para acessar a central.', 'error')
+            return redirect(url_for('login'))
+            
+        # 2. Sincronizar usuário na tabela `profiles`
+        profile_res = db.table('profiles').select('*').eq('id', user.id).execute()
+        
+        if not profile_res.data:
+            print(f"DEBUG: Profile missing for {email}. Creating...")
+            full_name = user.user_metadata.get('full_name', email.split('@')[0])
+            role = 'admin' if email in ADMIN_EMAILS else 'user'
+            
+            try:
+                db.table('profiles').insert({
+                    'id': user.id,
+                    'email': email,
+                    'full_name': full_name,
+                    'role': role
+                }).execute()
+                profile_res = db.table('profiles').select('*').eq('id', user.id).execute()
+            except Exception as insert_err:
+                print(f"[ERROR] Failed to auto-create profile for {email}: {insert_err}")
+                
+        if profile_res.data:
+            u = profile_res.data[0]
+            if not u['is_active']:
+                auth_client.auth.sign_out()
+                flash('Sua conta foi desativada.', 'error')
+                return redirect(url_for('login'))
+                
+            # Autenticar no Flask-Login
+            flask_user = User(u['id'], u['email'], u['full_name'], u['role'], u['is_active'])
+            login_user(flask_user)
+            return redirect(url_for('index'))
+        else:
+            auth_client.auth.sign_out()
+            flash('Erro ao processar seu perfil corporativo.', 'error')
+            return redirect(url_for('login'))
+            
+    except Exception as e:
+        print(f"[ERROR] Exceção na captura do callback OAuth: {e}")
+        # A API pode acusar que o 'code' já foi usado caso ele seja um redirecionamento duplicado (Refresh de tela).
+        if 'code pkce' not in str(e).lower() and 'already used' not in str(e).lower():
+            flash('Ocorreu um problema ao validar seu login com o Google. Tente novamente.', 'error')
+        return redirect(url_for('login'))
+
+
+@app.route('/login/google')
+def login_google():
+    """Inicia o fluxo de login OAuth do Google."""
+    if current_user.is_authenticated:
+        return redirect(url_for('index'))
+        
+    try:
+        # Omite o redirect_to forçado que dava conflito HTTP x HTTPS ou URLs não cadastradas na V1 para usar de fallback a raiz.
+        response = auth_client.auth.sign_in_with_oauth({
+            "provider": "google",
+            "options": {
+                "query_params": {
+                    "hd": "mendoncagalvao.com.br",
+                    "prompt": "select_account"
+                }
+            }
+        })
+        
+        return redirect(response.url)
+    except Exception as e:
+        print(f"[ERROR] Falha ao iniciar Google OAuth: {e}")
+        flash('Não foi possível iniciar o login com o Google. Tente novamente.', 'error')
+        return redirect(url_for('login'))
+        if profile_res.data:
+            u = profile_res.data[0]
+            if not u['is_active']:
+                auth_client.auth.sign_out()
+                flash('Sua conta foi desativada.', 'error')
+                return redirect(url_for('login'))
+                
+            # Autenticar no Flask-Login usando a mesma classe existente
+            flask_user = User(u['id'], u['email'], u['full_name'], u['role'], u['is_active'])
+            login_user(flask_user)
+            
+            next_page = request.args.get('next')
+            return redirect(next_page) if next_page else redirect(url_for('index'))
+        else:
+            auth_client.auth.sign_out()
+            flash('Erro ao processar seu perfil corporativo.', 'error')
+            return redirect(url_for('login'))
+            
+    except Exception as e:
+        print(f"[ERROR] Exceção em auth_callback: {e}")
+        flash('Ocorreu um problema ao validar seu login. Tente novamente.', 'error')
+        return redirect(url_for('login'))
 @app.route('/logout')
 @login_required
 def logout():

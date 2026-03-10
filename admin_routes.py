@@ -17,6 +17,7 @@ admin_bp = Blueprint('admin', __name__, url_prefix='/admin')
 def admin_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
+        print(f"DEBUG ADMIN_REQUIRED: user={getattr(current_user, 'email', 'N/A')}, auth={getattr(current_user, 'is_authenticated', False)}, role={getattr(current_user, 'role', 'N/A')}")
         if not current_user.is_authenticated or current_user.role not in ['admin', 'manager']:
             flash('Acesso não autorizado.', 'error')
             return redirect(url_for('index'))
@@ -43,6 +44,9 @@ def dashboard():
         logs_res = supabase.table('audit_logs').select('*').order('created_at', desc=True).limit(10).execute()
         logs = logs_res.data
     except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"[ERROR] CRITICAL DASHBOARD FAIL: {e}")
         flash(f'Erro ao carregar dashboard: {e}', 'error')
         stats = {'users_count': 0, 'systems_count': 0, 'active_users': 0}
         logs = []

@@ -88,7 +88,8 @@ serializer = URLSafeTimedSerializer(app.secret_key)
 login_manager = LoginManager()
 login_manager.init_app(app)
 login_manager.login_view = 'login'
-login_manager.login_message = 'Por favor, faça login para acessar esta página.'
+# Disable flash message per user request (was floating awkwardly in the UI after OAuth load)
+login_manager.login_message = None
 login_manager.login_message_category = 'info'
 
 class User(UserMixin):

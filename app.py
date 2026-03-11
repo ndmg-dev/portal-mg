@@ -15,8 +15,6 @@ from dotenv import load_dotenv
 
 from flask import Flask, render_template, request, redirect, url_for, flash
 from flask_login import LoginManager, login_user, logout_user, login_required, current_user, UserMixin
-from flask_mail import Mail, Message
-from itsdangerous import URLSafeTimedSerializer
 from supabase import create_client, Client
 
 # Import Employee Validation
@@ -68,21 +66,11 @@ supabase: Client = db
 app.register_blueprint(admin_bp)
 
 # Configuração do Flask-Mail
-app.config['MAIL_SERVER'] = 'smtp.gmail.com'
-app.config['MAIL_PORT'] = 587
-app.config['MAIL_USE_TLS'] = True
-app.config['MAIL_USERNAME'] = os.environ.get('MAIL_USERNAME')
-app.config['MAIL_PASSWORD'] = os.environ.get('MAIL_PASSWORD')
 
-if not app.config['MAIL_USERNAME']:
-    app.config['MAIL_SUPPRESS_SEND'] = True
-    app.config['MAIL_DEBUG'] = True
 
 # ── Configuração de Ambiente ──────────────────────────────────────────────────────
 APP_BASE_URL = os.environ.get('APP_BASE_URL', 'http://localhost:5000').rstrip('/')
 
-mail = Mail(app)
-serializer = URLSafeTimedSerializer(app.secret_key)
 
 # Inicializar Flask-Login
 login_manager = LoginManager()

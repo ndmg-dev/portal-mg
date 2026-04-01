@@ -20,7 +20,8 @@
     <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='img/favicon.svg') }}">
     <link rel="alternate icon" type="image/png" href="{{ url_for('static', filename='img/favicon.png') }}">
 
-    <!-- CSS -->
+    <!-- CSS Integrado (Fonte de Ícones Dinâmicos) -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/reset.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
 </head>
@@ -110,9 +111,12 @@
                 {% for sistema in sistemas if sistema.category == 'main' %}
                 <!-- Card de Sistema -->
                 <article class="sistema-card">
-                    <!-- CUSTOMIZAÇÃO: Ícones dos sistemas - Substitua pelos ícones reais -->
-                    <img src="{{ url_for('static', filename='img/' + sistema.icone) }}" alt="Ícone {{ sistema.titulo }}"
-                        class="sistema-icon">
+                    <!-- Suporte Híbrido: Renderiza arquivos PNG estáticos p/ apps antigos ou Ícones Vetoriais via Supabase Text class -->
+                    {% if '.png' in sistema.icone or '.svg' in sistema.icone or '.jpg' in sistema.icone %}
+                    <img src="{{ url_for('static', filename='img/' + sistema.icone) }}" alt="Ícone {{ sistema.titulo }}" class="sistema-icon">
+                    {% else %}
+                    <i class="{{ sistema.icone }} sistema-icon" style="font-size: 2.3rem; margin-bottom: 1rem; color: var(--accent-yellow); display: block;"></i>
+                    {% endif %}
 
                     <h3 class="sistema-titulo">{{ sistema.titulo }}</h3>
 
@@ -142,8 +146,11 @@
 
                 {% for sistema in sistemas if sistema.category == 'automation' %}
                 <article class="sistema-card">
-                    <img src="{{ url_for('static', filename='img/' + sistema.icone) }}" alt="Ícone {{ sistema.titulo }}"
-                        class="sistema-icon">
+                    {% if '.png' in sistema.icone or '.svg' in sistema.icone %}
+                    <img src="{{ url_for('static', filename='img/' + sistema.icone) }}" alt="Ícone {{ sistema.titulo }}" class="sistema-icon">
+                    {% else %}
+                    <i class="{{ sistema.icone }} sistema-icon" style="font-size: 2.3rem; margin-bottom: 1rem; color: var(--accent-yellow); display: block;"></i>
+                    {% endif %}
                     <h3 class="sistema-titulo">{{ sistema.titulo }}</h3>
                     <p class="sistema-descricao">{{ sistema.descricao }}</p>
                     <a href="{{ sistema.url }}" class="btn-cta" target="_blank" rel="noopener noreferrer">
